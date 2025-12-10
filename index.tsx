@@ -25,7 +25,11 @@ import {
   Ban,
   Eraser,
   Lock,
-  Unlock
+  Unlock,
+  PenTool,
+  User,
+  Building,
+  X
 } from 'lucide-react';
 
 // --- Types ---
@@ -225,11 +229,135 @@ const safeParseFloat = (value: any): number => {
   return isNaN(parsed) ? 0 : parsed;
 };
 
+// --- Components ---
+
+const SignaturePad = ({ 
+  label, 
+  onSave 
+}: { 
+  label: string, 
+  onSave: (dataUrl: string) => void 
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [hasDrawn, setHasDrawn] = useState(false);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.lineWidth = 2;
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = '#000000';
+      }
+    }
+  }, []);
+
+  const getPos = (e: any) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    return {
+      x: clientX - rect.left,
+      y: clientY - rect.top
+    };
+  };
+
+  const startDrawing = (e: any) => {
+    e.preventDefault(); // Prevent scrolling on touch
+    setIsDrawing(true);
+    const { x, y } = getPos(e);
+    const ctx = canvasRef.current?.getContext('2d');
+    ctx?.beginPath();
+    ctx?.moveTo(x, y);
+  };
+
+  const draw = (e: any) => {
+    e.preventDefault();
+    if (!isDrawing) return;
+    const { x, y } = getPos(e);
+    const ctx = canvasRef.current?.getContext('2d');
+    ctx?.lineTo(x, y);
+    ctx?.stroke();
+    if (!hasDrawn) setHasDrawn(true);
+  };
+
+  const stopDrawing = () => {
+    setIsDrawing(false);
+  };
+
+  const clear = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (canvas && ctx) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      setHasDrawn(false);
+    }
+  };
+
+  const save = () => {
+    if (canvasRef.current && hasDrawn) {
+      onSave(canvasRef.current.toDataURL('image/png'));
+    }
+  };
+
+  return (
+    <div className="flex flex-col border rounded-xl overflow-hidden shadow-sm bg-white">
+      <div className="bg-gray-50 border-b px-4 py-2 flex justify-between items-center">
+        <span className="font-semibold text-gray-700 text-sm flex items-center">
+          <PenTool className="w-4 h-4 mr-2" />
+          Assinatura: {label}
+        </span>
+        <button onClick={clear} className="text-gray-400 hover:text-red-500 text-xs flex items-center">
+          <Eraser className="w-3 h-3 mr-1" /> Limpar
+        </button>
+      </div>
+      <div className="relative h-40 bg-white cursor-crosshair touch-none">
+        <canvas
+          ref={canvasRef}
+          className="w-full h-full"
+          onMouseDown={startDrawing}
+          onMouseMove={draw}
+          onMouseUp={stopDrawing}
+          onMouseLeave={stopDrawing}
+          onTouchStart={startDrawing}
+          onTouchMove={draw}
+          onTouchEnd={stopDrawing}
+        />
+        {!hasDrawn && <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-gray-200 text-2xl font-handwriting select-none">Assine aqui</div>}
+      </div>
+      <div className="bg-gray-50 border-t px-4 py-2">
+        <button 
+          onClick={save}
+          disabled={!hasDrawn}
+          className={`w-full py-2 rounded-lg text-sm font-bold transition ${hasDrawn ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
+        >
+          Confirmar Assinatura
+        </button>
+      </div>
+    </div>
+  );
+};
+
 // --- Main Component ---
 
 const App = () => {
   const [step, setStep] = useState<AppStep>('setup');
   
+  // Header Info State
+  const [branch, setBranch] = useState('');
+  const [pharmacist, setPharmacist] = useState('');
+  const [manager, setManager] = useState('');
+
+  // Signature State
+  const [pharmSignature, setPharmSignature] = useState<string | null>(null);
+  const [managerSignature, setManagerSignature] = useState<string | null>(null);
+
   // Data State
   const [masterProducts, setMasterProducts] = useState<Map<string, Product>>(new Map()); // Key: ReducedCode
   const [barcodeIndex, setBarcodeIndex] = useState<Map<string, string>>(new Map()); // Key: Barcode, Value: ReducedCode
@@ -259,15 +387,14 @@ const App = () => {
     if ((window as any).lucide) (window as any).lucide.createIcons();
   }, [step, activeItem]);
 
-  // --- Calculations (Memoized for performance and Hook Stability) ---
+  // --- Calculations (Memoized) ---
 
   const stats = useMemo(() => {
-    // Phase 2 Recount Logic: Calculate 0-100% based ONLY on recount targets
+    // Phase 2 Logic
     if (recountTargets.size > 0) {
       let counted = 0;
       recountTargets.forEach(key => {
         const item = inventory.get(key);
-        // We check lastUpdated to ensure we only count items processed in this session
         if (item && item.lastUpdated !== null) counted++;
       });
       return {
@@ -322,7 +449,6 @@ const App = () => {
     } else if (name.endsWith('.xls') || name.endsWith('.xlsx')) {
       return parseExcel(file);
     } else {
-      // Default to CSV
       const text = await file.text();
       return parseCSV(text);
     }
@@ -334,11 +460,16 @@ const App = () => {
       return;
     }
     
+    // Validate Header Info
+    if (!branch.trim() || !pharmacist.trim() || !manager.trim()) {
+      setErrorMsg("Por favor, preencha as informações da Filial e Responsáveis.");
+      return;
+    }
+
     // Start Loading
     setIsLoading(true);
     setErrorMsg('');
 
-    // Small timeout to allow UI to render the loading state before heavy processing
     setTimeout(async () => {
       try {
         // --- 1. PRODUCT FILE ---
@@ -396,7 +527,7 @@ const App = () => {
              if (row['C']) stockDesc = String(row['C']).trim();
 
              if (!/[0-9]/.test(reduced)) return;
-             if (reduced.length > 20) return; // Ignore wildly long strings
+             if (reduced.length > 20) return; 
              if (reduced.toLowerCase().includes('cod')) return;
 
           } else {
@@ -411,7 +542,6 @@ const App = () => {
           }
 
           if (reduced && reduced !== 'undefined' && reduced !== '') {
-            // Update Master Product description if missing and present in stock file
             if (stockDesc && pMap.has(reduced)) {
                 const prod = pMap.get(reduced)!;
                 if (prod.description === 'Sem descrição' || prod.description === '') {
@@ -444,7 +574,7 @@ const App = () => {
         setMasterProducts(pMap);
         setBarcodeIndex(bMap);
         setInventory(iMap);
-        setRecountTargets(new Set()); // Clear recount on new upload
+        setRecountTargets(new Set()); 
         setStep('conference');
       } catch (e: any) {
         console.error("Erro:", e);
@@ -473,7 +603,6 @@ const App = () => {
 
     const product = findProduct(code);
     if (product) {
-      // Validar se produto existe na lista de ESTOQUE
       if (!inventory.has(product.reducedCode)) {
         playSound('error');
         alert(`O produto "${product.description}" (Red: ${product.reducedCode}) não consta na lista de estoque carregada. Contagem não permitida para itens fora da lista.`);
@@ -503,7 +632,6 @@ const App = () => {
     const systemQty = currentInv ? currentInv.systemQty : 0;
     const status = qty === systemQty ? 'matched' : 'divergent';
     
-    // Play sound based on status
     playSound(status === 'matched' ? 'success' : 'error');
 
     const newItem: StockItem = {
@@ -549,7 +677,6 @@ const App = () => {
   };
 
   const handleRecountAllDivergences = () => {
-    // 1. Check for pending items (Rule: Cannot recount if pending items exist)
     let pendingCount = 0;
     inventory.forEach(i => { if (i.status === 'pending') pendingCount++; });
     
@@ -559,7 +686,6 @@ const App = () => {
       return;
     }
 
-    // 2. Identify divergent items
     const divergentKeys = new Set<string>();
     inventory.forEach((item, key) => {
       if (item.status === 'divergent') {
@@ -572,7 +698,6 @@ const App = () => {
       return;
     }
 
-    // 3. Reset those items in the inventory map
     const newInventory = new Map(inventory);
     divergentKeys.forEach(key => {
       const item = newInventory.get(key);
@@ -581,26 +706,21 @@ const App = () => {
           ...item,
           countedQty: 0,
           status: 'pending',
-          lastUpdated: null // This ensures they show up as "pending" in stats
+          lastUpdated: null 
         });
       }
     });
 
-    // 4. Update all states
     setInventory(newInventory);
     setRecountTargets(divergentKeys);
-    setLastScanned(null); // Clear history for fresh start
+    setLastScanned(null); 
     setActiveItem(null);
     setScanInput('');
     setStep('conference');
-    
-    // 5. Focus
     setTimeout(() => inputRef.current?.focus(), 100);
   };
 
   const handleFinalize = () => {
-    // 1. Strict Check: Phase 1 Completion (No Pending items allowed)
-    // This applies to both Phase 1 (Initial) and Phase 2 (Recount) because recount resets items to pending.
     const pendingCount = Array.from(inventory.values()).filter(i => i.status === 'pending').length;
     
     if (pendingCount > 0) {
@@ -609,10 +729,6 @@ const App = () => {
       return;
     }
 
-    // 2. Strict Check: Phase 2 Requirement (If Divergences exist, Recount must have been initiated)
-    // We check if divergences exist AND we are NOT in recount mode (recountTargets.size == 0).
-    // If stats.isRecount is true, it means we are in Phase 2 workflow (or finished it), so we rely on pending == 0 check above.
-    // If stats.isRecount is false, it means we haven't started Phase 2.
     const divergentCount = Array.from(inventory.values()).filter(i => i.status === 'divergent').length;
     
     if (divergentCount > 0 && !stats.isRecount) {
@@ -621,30 +737,72 @@ const App = () => {
       return;
     }
 
-    // If passed all checks:
     setStep('report');
   };
 
-  // Helper to determine display color for divergence
   const getDivergenceColor = (system: number, counted: number, status: string) => {
       if (status === 'matched') return 'text-green-600';
-      if (counted > system) return 'text-blue-600'; // Positive
-      return 'text-red-600'; // Negative
-  };
-
-  const getDivergenceBg = (system: number, counted: number, status: string) => {
-      if (status === 'matched') return 'bg-green-100 text-green-800';
-      if (counted > system) return 'bg-blue-100 text-blue-800'; // Positive
-      return 'bg-red-100 text-red-800'; // Negative
+      if (counted > system) return 'text-blue-600'; 
+      return 'text-red-600'; 
   };
 
   // --- Render Helpers ---
 
   const renderSetup = () => (
-    <div className="flex flex-col items-center justify-center h-full max-w-2xl mx-auto p-6">
-      <div className="text-center mb-10">
+    <div className="flex flex-col items-center justify-center min-h-full max-w-2xl mx-auto p-6 overflow-y-auto">
+      <div className="text-center mb-8">
         <h1 className="text-3xl font-bold text-blue-900 mb-2">Conferência de Farmácia</h1>
-        <p className="text-gray-500">Importe os dados para iniciar o inventário.</p>
+        <p className="text-gray-500">Informe os dados e importe os arquivos para iniciar.</p>
+      </div>
+
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 w-full mb-8">
+         <h3 className="font-semibold text-gray-700 mb-4 flex items-center border-b pb-2">
+           <User className="w-5 h-5 mr-2 text-blue-500" /> 
+           Responsáveis pela Conferência
+         </h3>
+         <div className="space-y-4">
+            <div>
+               <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Filial</label>
+               <div className="relative">
+                  <Building className="absolute left-3 top-3 text-gray-400 w-5 h-5" />
+                  <input 
+                    type="text" 
+                    value={branch}
+                    onChange={(e) => setBranch(e.target.value)}
+                    placeholder="Ex: Filial Centro - 01"
+                    className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring focus:ring-blue-100 outline-none bg-white text-gray-900"
+                  />
+               </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+               <div>
+                 <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Farmacêutico(a)</label>
+                 <div className="relative">
+                    <User className="absolute left-3 top-3 text-gray-400 w-5 h-5" />
+                    <input 
+                      type="text" 
+                      value={pharmacist}
+                      onChange={(e) => setPharmacist(e.target.value)}
+                      placeholder="Nome completo"
+                      className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring focus:ring-blue-100 outline-none bg-white text-gray-900"
+                    />
+                 </div>
+               </div>
+               <div>
+                 <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Gestor(a)</label>
+                 <div className="relative">
+                    <User className="absolute left-3 top-3 text-gray-400 w-5 h-5" />
+                    <input 
+                      type="text" 
+                      value={manager}
+                      onChange={(e) => setManager(e.target.value)}
+                      placeholder="Nome completo"
+                      className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring focus:ring-blue-100 outline-none bg-white text-gray-900"
+                    />
+                 </div>
+               </div>
+            </div>
+         </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full mb-8">
@@ -678,9 +836,9 @@ const App = () => {
 
       <button 
         onClick={handleFileUpload}
-        disabled={isLoading || !productFile || !stockFile}
+        disabled={isLoading || !productFile || !stockFile || !branch || !pharmacist || !manager}
         className={`w-full py-4 rounded-xl text-lg font-bold shadow-lg transition transform active:scale-95 flex items-center justify-center ${
-          isLoading || !productFile || !stockFile 
+          isLoading || !productFile || !stockFile || !branch || !pharmacist || !manager
             ? 'bg-gray-300 text-gray-500 cursor-not-allowed' 
             : 'bg-blue-600 text-white hover:bg-blue-700'
         }`}
@@ -689,27 +847,28 @@ const App = () => {
         {!isLoading && <ArrowRight className="ml-2 w-5 h-5" />}
       </button>
 
-      <div className="mt-8 text-xs text-gray-400 text-center">
+      <div className="mt-8 text-xs text-gray-400 text-center pb-8">
         <p>Formatos suportados: CSV, HTML, Excel (.xls, .xlsx)</p>
         <p className="mt-2 text-gray-500">Nota: O arquivo de estoque irá somar as quantidades se houver códigos duplicados.</p>
       </div>
     </div>
   );
 
+  // ... (renderConference and renderDivergence remain same, only exportPDF in report changes) ...
+  // ... (Skipping full repeat of Conference/Divergence for brevity, assuming standard structure) ...
+  
   const renderConference = () => {
-    // Get System Qty for active item
+    // Standard implementation from previous state
     const activeSystemQty = activeItem ? (inventory.get(activeItem.reducedCode)?.systemQty || 0) : 0;
     
     return (
       <div className="flex flex-col h-full bg-gray-100">
-        {/* Header Bar */}
         <header className="bg-white shadow-sm p-4 flex justify-between items-center z-10 sticky top-0">
           <div className="flex items-center">
             <ClipboardList className="w-6 h-6 text-blue-600 mr-2" />
             <h1 className="font-bold text-gray-800 hidden md:block">Conferência</h1>
           </div>
           
-          {/* Progress Bar Section - Enhanced */}
           <div className="flex-1 max-w-xl mx-4">
              <div className="flex justify-between text-xs text-gray-500 uppercase font-semibold mb-1">
                <span className={stats.isRecount ? "text-orange-600" : "text-blue-600"}>
@@ -737,16 +896,10 @@ const App = () => {
           </div>
         </header>
 
-        {/* Main Content */}
         <main className="flex-1 overflow-y-auto p-4 md:p-6 max-w-5xl mx-auto w-full flex flex-col">
-          
           <div className="bg-white rounded-2xl shadow-lg overflow-hidden flex flex-col md:flex-row min-h-[400px]">
-            
-            {/* Left: Input Section */}
             <div className="p-8 flex-1 flex flex-col justify-center border-b md:border-b-0 md:border-r border-gray-100">
-              
               {!activeItem ? (
-                // State: Scan Product
                 <div className="flex flex-col h-full justify-center">
                   <div className="mb-2 flex items-center justify-between">
                      <label className="text-gray-500 text-sm font-semibold uppercase">Bipar Código de Barras ou Reduzido</label>
@@ -769,7 +922,6 @@ const App = () => {
                   </p>
                 </div>
               ) : (
-                // State: Enter Quantity
                 <div className="flex flex-col h-full justify-center animate-fade-in">
                    <div className="mb-6">
                     <span className={`inline-block px-2 py-1 text-xs font-bold rounded mb-2 ${stats.isRecount ? 'bg-orange-100 text-orange-700' : 'bg-blue-100 text-blue-700'}`}>
@@ -833,10 +985,7 @@ const App = () => {
               )}
             </div>
 
-            {/* Right: Info / History Section */}
             <div className="bg-gray-50 w-full md:w-1/3 p-6 flex flex-col border-l border-gray-100">
-              
-              {/* Conditional: Recount Queue OR History */}
               {stats.isRecount && !activeItem ? (
                  <div className="flex-1 flex flex-col">
                     <h3 className="text-xs font-bold text-orange-600 uppercase tracking-wider mb-4 flex items-center">
@@ -929,26 +1078,12 @@ const App = () => {
   };
 
   const renderDivergence = () => {
-    // Explicitly type items to prevent "unknown" errors
+    // Reusing logic
     const allStockItems: StockItem[] = Array.from(inventory.values());
-
-    const divergentItems = allStockItems
-      .filter(item => item.status === 'divergent')
-      .map(item => ({
-        item,
-        product: masterProducts.get(item.reducedCode)
-      }));
-
-    const matchedItems = allStockItems
-      .filter(item => item.status === 'matched')
-      .map(item => ({
-        item,
-        product: masterProducts.get(item.reducedCode)
-      }));
-
+    const divergentItems = allStockItems.filter(item => item.status === 'divergent').map(item => ({ item, product: masterProducts.get(item.reducedCode) }));
+    const matchedItems = allStockItems.filter(item => item.status === 'matched').map(item => ({ item, product: masterProducts.get(item.reducedCode) }));
     const pendingItems = allStockItems.filter(i => i.status === 'pending');
     
-    // Determine blocking state for Finalize
     const isPendingBlocking = pendingItems.length > 0;
     const isRecountBlocking = divergentItems.length > 0 && !stats.isRecount;
     const isFinalizeBlocked = isPendingBlocking || isRecountBlocking;
@@ -994,10 +1129,7 @@ const App = () => {
         </header>
 
         <main className="flex-1 overflow-y-auto p-6 max-w-6xl mx-auto w-full">
-          
-          <div className="grid grid-cols-1 gap-6">
-            
-            {/* 1. Divergences */}
+           <div className="grid grid-cols-1 gap-6">
             {divergentItems.length > 0 && (
               <div className="bg-white rounded-xl shadow overflow-hidden">
                 <div className="bg-red-50 p-4 border-b border-red-100 flex justify-between items-center">
@@ -1035,9 +1167,6 @@ const App = () => {
                             <td className="p-4 text-right">
                               <button 
                                 onClick={() => {
-                                  // Can only allow individual recount if phase 1 complete, or just let them count?
-                                  // User logic implies strictness, but individual manual fix might be ok.
-                                  // Let's stick to global rule for simplicity or check pending.
                                   if (pendingItems.length > 0) {
                                       alert("Atenção: Finalize os itens pendentes antes de recontar.");
                                       return;
@@ -1060,8 +1189,7 @@ const App = () => {
                 </div>
               </div>
             )}
-
-             {/* 2. Pending Items */}
+            
             {pendingItems.length > 0 && (
               <div className="bg-white rounded-xl shadow overflow-hidden border border-orange-100">
                 <div className="bg-orange-50 p-4 border-b border-orange-100 flex justify-between items-center">
@@ -1097,10 +1225,9 @@ const App = () => {
               </div>
             )}
             
-            {/* 3. Matched Items (New Section) */}
             {matchedItems.length > 0 && (
               <div className="bg-white rounded-xl shadow overflow-hidden border border-green-100">
-                <div className="bg-green-50 p-4 border-b border-green-100 cursor-pointer" onClick={() => {}}>
+                <div className="bg-green-50 p-4 border-b border-green-100">
                   <h2 className="font-bold text-green-800 flex items-center">
                     <ThumbsUp className="w-5 h-5 mr-2" />
                     Itens Conferidos e Corretos ({matchedItems.length})
@@ -1133,13 +1260,11 @@ const App = () => {
                 </div>
               </div>
             )}
-
             {divergentItems.length === 0 && pendingItems.length === 0 && matchedItems.length === 0 && (
                <div className="text-center py-20">
                  <p className="text-gray-400">Nenhum dado carregado.</p>
                </div>
             )}
-
           </div>
         </main>
       </div>
@@ -1147,11 +1272,12 @@ const App = () => {
   };
 
   const renderReport = () => {
-    // Generate simple report logic
     const allItems: StockItem[] = Array.from(inventory.values());
     const matched = allItems.filter(i => i.status === 'matched').length;
     const divergent = allItems.filter(i => i.status === 'divergent').length;
     const pending = allItems.filter(i => i.status === 'pending').length;
+
+    const signaturesComplete = pharmSignature && managerSignature;
 
     const exportCSV = () => {
       const headers = "Codigo Reduzido;Descricao;Estoque Sistema;Contagem;Diferenca;Status\n";
@@ -1165,7 +1291,7 @@ const App = () => {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `conferencia_${new Date().toISOString().slice(0,10)}.csv`;
+      a.download = `conferencia_${branch.replace(/\s+/g,'_')}_${new Date().toISOString().slice(0,10)}.csv`;
       a.click();
     };
 
@@ -1182,16 +1308,21 @@ const App = () => {
       // Header
       doc.setFontSize(18);
       doc.text("Relatório de Conferência de Estoque", 14, 20);
+      
       doc.setFontSize(10);
-      doc.text(`Data: ${dateStr}`, 14, 28);
+      doc.text(`Filial: ${branch}`, 14, 28);
+      doc.text(`Data: ${dateStr}`, 14, 33);
+      doc.text(`Farmacêutico(a): ${pharmacist}`, 14, 38);
+      doc.text(`Gestor(a): ${manager}`, 14, 43);
       
       // Statistics
-      doc.text(`Total Itens: ${allItems.length}`, 14, 36);
-      doc.text(`Corretos: ${matched}`, 14, 41);
+      doc.text(`Total Itens: ${allItems.length}`, 14, 53);
+      doc.setTextColor(0, 128, 0);
+      doc.text(`Corretos: ${matched}`, 14, 58);
       doc.setTextColor(200, 0, 0);
-      doc.text(`Divergentes: ${divergent}`, 14, 46);
+      doc.text(`Divergentes: ${divergent}`, 60, 58);
       doc.setTextColor(100, 100, 100);
-      doc.text(`Não Contados: ${pending}`, 14, 51);
+      doc.text(`Não Contados: ${pending}`, 110, 58);
       doc.setTextColor(0, 0, 0);
 
       // Table Data
@@ -1225,65 +1356,139 @@ const App = () => {
       });
 
       (doc as any).autoTable({
-        startY: 55,
+        startY: 65,
         head: [tableColumn],
         body: tableRows,
         theme: 'grid',
         styles: { fontSize: 8 },
-        headStyles: { fillColor: [66, 133, 244] }, // Google Blue
-        rowStyles: (row: any) => {
-             // Logic handled in didParseCell
-        },
+        headStyles: { fillColor: [66, 133, 244] },
         didParseCell: (data: any) => {
             if (data.section === 'body') {
                 const diffVal = parseFloat(data.row.raw[4]);
-                // Color Code the Difference Column or Status
                 if (data.column.index === 4 || data.column.index === 5) {
                     if (diffVal > 0) {
-                        data.cell.styles.textColor = [0, 0, 255]; // Blue
+                        data.cell.styles.textColor = [0, 0, 255]; 
                         data.cell.styles.fontStyle = 'bold';
                     } else if (diffVal < 0) {
-                        data.cell.styles.textColor = [200, 0, 0]; // Red
+                        data.cell.styles.textColor = [200, 0, 0]; 
                         data.cell.styles.fontStyle = 'bold';
                     } else {
-                        data.cell.styles.textColor = [0, 128, 0]; // Green
+                        data.cell.styles.textColor = [0, 128, 0]; 
                     }
                 }
             }
         }
       });
 
-      doc.save(`relatorio_conferencia_${new Date().toISOString().slice(0,10)}.pdf`);
+      // Signatures Footer
+      const finalY = (doc as any).lastAutoTable.finalY + 20;
+      
+      // Page break if needed
+      if (finalY > 250) {
+          doc.addPage();
+          doc.text("Assinaturas", 14, 20);
+      }
+      
+      const sigY = finalY > 250 ? 30 : finalY;
+
+      // Add Pharmacist Sig
+      if (pharmSignature) {
+          doc.addImage(pharmSignature, 'PNG', 20, sigY, 60, 30);
+          doc.line(20, sigY + 30, 80, sigY + 30);
+          doc.setFontSize(8);
+          doc.text("Farmacêutico(a) Responsável", 20, sigY + 35);
+          doc.text(pharmacist, 20, sigY + 39);
+      }
+
+      // Add Manager Sig
+      if (managerSignature) {
+          doc.addImage(managerSignature, 'PNG', 110, sigY, 60, 30);
+          doc.line(110, sigY + 30, 170, sigY + 30);
+          doc.setFontSize(8);
+          doc.text("Gestor(a) Responsável", 110, sigY + 35);
+          doc.text(manager, 110, sigY + 39);
+      }
+
+      doc.save(`relatorio_${branch.replace(/\s+/g,'_')}.pdf`);
     };
 
     return (
-      <div className="flex flex-col h-full bg-white">
+      <div className="flex flex-col h-full bg-white overflow-y-auto">
         <div className="max-w-4xl mx-auto w-full p-8 flex flex-col items-center">
-          <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mb-6">
-            <FileText className="w-10 h-10" />
+          <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mb-6">
+            <FileText className="w-8 h-8" />
           </div>
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">Conferência Finalizada</h1>
-          <p className="text-gray-500 mb-10">Resumo da operação de estoque.</p>
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">Conferência Finalizada</h1>
+          <p className="text-gray-500 mb-8">Resumo da operação de estoque.</p>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full mb-10">
-            <div className="p-6 bg-green-50 rounded-xl border border-green-100 text-center">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full mb-8">
+            <div className="p-4 bg-green-50 rounded-xl border border-green-100 text-center">
               <span className="text-green-600 font-semibold uppercase text-xs tracking-wider">Corretos</span>
-              <p className="text-4xl font-bold text-gray-800 mt-2">{matched}</p>
+              <p className="text-3xl font-bold text-gray-800 mt-2">{matched}</p>
             </div>
-            <div className="p-6 bg-red-50 rounded-xl border border-red-100 text-center">
+            <div className="p-4 bg-red-50 rounded-xl border border-red-100 text-center">
               <span className="text-red-600 font-semibold uppercase text-xs tracking-wider">Divergentes</span>
-              <p className="text-4xl font-bold text-gray-800 mt-2">{divergent}</p>
+              <p className="text-3xl font-bold text-gray-800 mt-2">{divergent}</p>
             </div>
-             <div className="p-6 bg-gray-50 rounded-xl border border-gray-100 text-center">
+             <div className="p-4 bg-gray-50 rounded-xl border border-gray-100 text-center">
               <span className="text-gray-500 font-semibold uppercase text-xs tracking-wider">Não Contados</span>
-              <p className="text-4xl font-bold text-gray-800 mt-2">{pending}</p>
+              <p className="text-3xl font-bold text-gray-800 mt-2">{pending}</p>
             </div>
+          </div>
+
+          <div className="w-full bg-gray-50 p-6 rounded-xl border border-gray-100 mb-8">
+             <h3 className="font-bold text-gray-800 mb-4 flex items-center">
+                <PenTool className="w-5 h-5 mr-2" />
+                Coleta de Assinaturas
+             </h3>
+             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div>
+                   <p className="text-sm font-semibold text-gray-600 mb-2">Farmacêutico: {pharmacist}</p>
+                   {pharmSignature ? (
+                      <div className="relative border rounded-lg overflow-hidden bg-white h-40 flex items-center justify-center">
+                         <img src={pharmSignature} alt="Assinatura Farmacêutico" className="max-h-full" />
+                         <button 
+                            onClick={() => setPharmSignature(null)} 
+                            className="absolute top-2 right-2 bg-red-100 text-red-600 p-1 rounded hover:bg-red-200"
+                            title="Apagar assinatura"
+                         >
+                            <X className="w-4 h-4" />
+                         </button>
+                      </div>
+                   ) : (
+                      <SignaturePad label="Farmacêutico(a)" onSave={setPharmSignature} />
+                   )}
+                </div>
+                <div>
+                   <p className="text-sm font-semibold text-gray-600 mb-2">Gestor: {manager}</p>
+                   {managerSignature ? (
+                      <div className="relative border rounded-lg overflow-hidden bg-white h-40 flex items-center justify-center">
+                         <img src={managerSignature} alt="Assinatura Gestor" className="max-h-full" />
+                         <button 
+                            onClick={() => setManagerSignature(null)} 
+                            className="absolute top-2 right-2 bg-red-100 text-red-600 p-1 rounded hover:bg-red-200"
+                            title="Apagar assinatura"
+                         >
+                            <X className="w-4 h-4" />
+                         </button>
+                      </div>
+                   ) : (
+                      <SignaturePad label="Gestor(a)" onSave={setManagerSignature} />
+                   )}
+                </div>
+             </div>
           </div>
 
           <div className="grid grid-cols-1 gap-4 w-full md:w-auto">
+            {!signaturesComplete && (
+                <div className="text-center text-red-500 font-medium mb-2 bg-red-50 p-2 rounded">
+                   Colete ambas as assinaturas para liberar o download.
+                </div>
+            )}
             <button 
               onClick={exportPDF}
-              className="flex items-center justify-center space-x-2 bg-red-600 text-white px-8 py-4 rounded-xl text-lg font-bold shadow-lg hover:bg-red-700 transition w-full"
+              disabled={!signaturesComplete}
+              className={`flex items-center justify-center space-x-2 px-8 py-4 rounded-xl text-lg font-bold shadow-lg transition w-full ${signaturesComplete ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
             >
               <Printer className="w-5 h-5" />
               <span>Baixar Relatório (PDF)</span>
@@ -1291,7 +1496,8 @@ const App = () => {
 
             <button 
               onClick={exportCSV}
-              className="flex items-center justify-center space-x-2 bg-blue-600 text-white px-8 py-4 rounded-xl text-lg font-bold shadow-lg hover:bg-blue-700 transition w-full"
+              disabled={!signaturesComplete}
+              className={`flex items-center justify-center space-x-2 px-8 py-4 rounded-xl text-lg font-bold shadow-lg transition w-full ${signaturesComplete ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
             >
               <Download className="w-5 h-5" />
               <span>Baixar Relatório (CSV)</span>
