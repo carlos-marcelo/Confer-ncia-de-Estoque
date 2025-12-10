@@ -29,7 +29,8 @@ import {
   PenTool,
   User,
   Building,
-  X
+  X,
+  Pill
 } from 'lucide-react';
 
 // --- Types ---
@@ -362,6 +363,7 @@ const App = () => {
   const [masterProducts, setMasterProducts] = useState<Map<string, Product>>(new Map()); // Key: ReducedCode
   const [barcodeIndex, setBarcodeIndex] = useState<Map<string, string>>(new Map()); // Key: Barcode, Value: ReducedCode
   const [inventory, setInventory] = useState<Map<string, StockItem>>(new Map()); // Key: ReducedCode
+  const [isControlledStock, setIsControlledStock] = useState(false); // New state for controlled products
   
   // Recount State (Phase 2)
   const [recountTargets, setRecountTargets] = useState<Set<string>>(new Set());
@@ -522,8 +524,10 @@ const App = () => {
           
           if (isStockExcel) {
              reduced = String(row['B'] || '').trim();
-             const val = row['O'];
+             // CONDITIONAL LOGIC FOR CONTROLLED PRODUCTS
+             const val = isControlledStock ? row['L'] : row['O'];
              qty = safeParseFloat(val);
+             
              if (row['C']) stockDesc = String(row['C']).trim();
 
              if (!/[0-9]/.test(reduced)) return;
@@ -819,7 +823,22 @@ const App = () => {
         <div className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center transition-colors ${stockFile ? 'border-green-500 bg-green-50' : 'border-gray-300 hover:border-blue-400'}`}>
           <FileSpreadsheet className={`w-12 h-12 mb-4 ${stockFile ? 'text-green-500' : 'text-gray-400'}`} />
           <h3 className="font-semibold text-gray-700 mb-2">Arquivo de Estoque</h3>
-          <p className="text-xs text-gray-500 text-center mb-4">Estoque (Excel: B=Red, O=Qtd)</p>
+          
+          <div className="flex items-center mb-4 bg-white px-3 py-2 rounded-lg border border-gray-200 shadow-sm w-full max-w-[250px] justify-center">
+             <input 
+               type="checkbox" 
+               id="controlledStock" 
+               checked={isControlledStock} 
+               onChange={(e) => setIsControlledStock(e.target.checked)}
+               className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 border-gray-300 mr-2"
+             />
+             <label htmlFor="controlledStock" className="text-xs text-gray-600 font-medium cursor-pointer select-none flex items-center">
+               <Pill className="w-3 h-3 mr-1 text-blue-500" />
+               Produtos Controlados?
+             </label>
+          </div>
+
+          <p className="text-xs text-gray-500 text-center mb-4">Estoque (Excel: B=Red, {isControlledStock ? 'L' : 'O'}=Qtd)</p>
           <label className="cursor-pointer bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-4 py-2 rounded-lg text-sm transition">
             {stockFile ? stockFile.name : 'Selecionar Arquivo'}
             <input type="file" accept=".csv,.txt,.html,.htm,.xls,.xlsx" className="hidden" onChange={(e) => setStockFile(e.target.files?.[0] || null)} />
