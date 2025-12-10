@@ -21,7 +21,11 @@ import {
   TrendingUp,
   TrendingDown,
   Volume2,
-  Tag
+  Tag,
+  Ban,
+  Eraser,
+  Lock,
+  Unlock
 } from 'lucide-react';
 
 // --- Types ---
@@ -518,8 +522,44 @@ const App = () => {
     setTimeout(() => inputRef.current?.focus(), 50);
   };
 
+  const handleZeroPending = () => {
+    if (!window.confirm("Atenção: Você está prestes a definir a contagem de todos os itens PENDENTES como 0 (zero).\n\nIsso significa que você assumiu que esses itens não existem fisicamente no estoque.\n\nDeseja continuar e encerrar a 1ª fase de contagem?")) return;
+
+    const newInventory = new Map(inventory);
+    let changed = 0;
+
+    newInventory.forEach((item, key) => {
+      if (item.status === 'pending') {
+        const systemQty = item.systemQty;
+        const counted = 0;
+        const status = systemQty === 0 ? 'matched' : 'divergent';
+        
+        newInventory.set(key, {
+          ...item,
+          countedQty: counted,
+          status: status,
+          lastUpdated: new Date()
+        });
+        changed++;
+      }
+    });
+
+    setInventory(newInventory);
+    playSound('success');
+  };
+
   const handleRecountAllDivergences = () => {
-    // 1. Identify divergent items
+    // 1. Check for pending items (Rule: Cannot recount if pending items exist)
+    let pendingCount = 0;
+    inventory.forEach(i => { if (i.status === 'pending') pendingCount++; });
+    
+    if (pendingCount > 0) {
+      playSound('error');
+      alert(`Ação Bloqueada!\n\nAinda existem ${pendingCount} itens pendentes de contagem.\n\nRegra: Não é permitido iniciar recontagens sem terminar a contagem inicial de todos os produtos.\n\nSolução: Bipe os itens faltantes ou use a opção "Zerar Itens Pendentes" para encerrar a 1ª fase.`);
+      return;
+    }
+
+    // 2. Identify divergent items
     const divergentKeys = new Set<string>();
     inventory.forEach((item, key) => {
       if (item.status === 'divergent') {
@@ -532,7 +572,7 @@ const App = () => {
       return;
     }
 
-    // 2. Reset those items in the inventory map
+    // 3. Reset those items in the inventory map
     const newInventory = new Map(inventory);
     divergentKeys.forEach(key => {
       const item = newInventory.get(key);
@@ -546,7 +586,7 @@ const App = () => {
       }
     });
 
-    // 3. Update all states
+    // 4. Update all states
     setInventory(newInventory);
     setRecountTargets(divergentKeys);
     setLastScanned(null); // Clear history for fresh start
@@ -554,8 +594,35 @@ const App = () => {
     setScanInput('');
     setStep('conference');
     
-    // 4. Focus
+    // 5. Focus
     setTimeout(() => inputRef.current?.focus(), 100);
+  };
+
+  const handleFinalize = () => {
+    // 1. Strict Check: Phase 1 Completion (No Pending items allowed)
+    // This applies to both Phase 1 (Initial) and Phase 2 (Recount) because recount resets items to pending.
+    const pendingCount = Array.from(inventory.values()).filter(i => i.status === 'pending').length;
+    
+    if (pendingCount > 0) {
+      playSound('error');
+      alert(`Ação Bloqueada!\n\nExistem ${pendingCount} itens com status pendente.\n\nRegra: Não é permitido finalizar com itens não contados.\nSe estiver na Fase 1: Termine de contar ou zere os pendentes.\nSe estiver na Fase 2: Termine a recontagem de todos os itens.`);
+      return;
+    }
+
+    // 2. Strict Check: Phase 2 Requirement (If Divergences exist, Recount must have been initiated)
+    // We check if divergences exist AND we are NOT in recount mode (recountTargets.size == 0).
+    // If stats.isRecount is true, it means we are in Phase 2 workflow (or finished it), so we rely on pending == 0 check above.
+    // If stats.isRecount is false, it means we haven't started Phase 2.
+    const divergentCount = Array.from(inventory.values()).filter(i => i.status === 'divergent').length;
+    
+    if (divergentCount > 0 && !stats.isRecount) {
+      playSound('error');
+      alert("Ação Bloqueada!\n\nForam encontradas divergências após a contagem inicial.\n\nRegra: É obrigatório iniciar e concluir a recontagem (2ª Fase) das divergências antes de finalizar.\n\nClique em 'Recontar Todas as Divergências' para prosseguir.");
+      return;
+    }
+
+    // If passed all checks:
+    setStep('report');
   };
 
   // Helper to determine display color for divergence
@@ -880,6 +947,11 @@ const App = () => {
       }));
 
     const pendingItems = allStockItems.filter(i => i.status === 'pending');
+    
+    // Determine blocking state for Finalize
+    const isPendingBlocking = pendingItems.length > 0;
+    const isRecountBlocking = divergentItems.length > 0 && !stats.isRecount;
+    const isFinalizeBlocked = isPendingBlocking || isRecountBlocking;
 
     return (
       <div className="flex flex-col h-full bg-gray-50">
@@ -894,16 +966,28 @@ const App = () => {
              {divergentItems.length > 0 && (
                 <button 
                   onClick={handleRecountAllDivergences}
-                  className="bg-orange-100 text-orange-700 border border-orange-200 px-4 py-2 rounded-lg text-sm font-medium hover:bg-orange-200 transition flex items-center shadow-sm"
+                  className={`border px-4 py-2 rounded-lg text-sm font-medium transition flex items-center shadow-sm ${
+                    pendingItems.length > 0 
+                    ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed' 
+                    : 'bg-orange-100 text-orange-700 border-orange-200 hover:bg-orange-200'
+                  }`}
+                  title={pendingItems.length > 0 ? "Termine os itens pendentes antes de recontar" : "Iniciar recontagem"}
                 >
-                  <RefreshCw className="w-4 h-4 mr-2" />
+                  {pendingItems.length > 0 && <Ban className="w-4 h-4 mr-2" />}
+                  {!pendingItems.length && <RefreshCw className="w-4 h-4 mr-2" />}
                   Recontar Todas as Divergências
                 </button>
              )}
             <button 
-              onClick={() => setStep('report')}
-              className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition shadow-sm"
+              onClick={handleFinalize}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition shadow-sm flex items-center ${
+                isFinalizeBlocked
+                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed hover:bg-gray-300'
+                  : 'bg-green-600 text-white hover:bg-green-700'
+              }`}
+              title={isFinalizeBlocked ? "Conclua todas as pendências e recontagens para liberar" : "Gerar Relatório Final"}
             >
+              {isFinalizeBlocked ? <Lock className="w-4 h-4 mr-2" /> : <Unlock className="w-4 h-4 mr-2" />}
               Finalizar e Gerar Relatório
             </button>
           </div>
@@ -951,6 +1035,13 @@ const App = () => {
                             <td className="p-4 text-right">
                               <button 
                                 onClick={() => {
+                                  // Can only allow individual recount if phase 1 complete, or just let them count?
+                                  // User logic implies strictness, but individual manual fix might be ok.
+                                  // Let's stick to global rule for simplicity or check pending.
+                                  if (pendingItems.length > 0) {
+                                      alert("Atenção: Finalize os itens pendentes antes de recontar.");
+                                      return;
+                                  }
                                   setActiveItem(product || null);
                                   setScanInput('');
                                   setStep('conference');
@@ -973,14 +1064,21 @@ const App = () => {
              {/* 2. Pending Items */}
             {pendingItems.length > 0 && (
               <div className="bg-white rounded-xl shadow overflow-hidden border border-orange-100">
-                <div className="bg-orange-50 p-4 border-b border-orange-100">
+                <div className="bg-orange-50 p-4 border-b border-orange-100 flex justify-between items-center">
                    <h2 className="font-bold text-orange-800 flex items-center">
                     <Package className="w-5 h-5 mr-2" />
                     Itens Pendentes ({pendingItems.length})
                   </h2>
+                   <button 
+                    onClick={handleZeroPending}
+                    className="text-xs font-bold text-orange-700 bg-white border border-orange-200 px-3 py-1.5 rounded hover:bg-orange-100 transition flex items-center"
+                   >
+                     <Eraser className="w-3 h-3 mr-1" />
+                     Zerar Pendentes (Finalizar 1ª Fase)
+                   </button>
                 </div>
                 <div className="p-4">
-                  <p className="text-sm text-gray-500 mb-4">Estes itens constam no estoque mas ainda não foram bipados.</p>
+                  <p className="text-sm text-gray-500 mb-4">Estes itens constam no estoque mas ainda não foram bipados. Você deve bipá-los ou zerá-los para prosseguir.</p>
                   <div className="max-h-60 overflow-y-auto border rounded bg-gray-50 p-2">
                     {pendingItems.map(item => {
                       const prod = masterProducts.get(item.reducedCode);
